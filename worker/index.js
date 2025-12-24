@@ -131,20 +131,62 @@ async function detectAbandonedJobs() {
   }
 }
 
-async function main() {
+// async function main() {
+//   const client = await pool.connect();
+
+//   try {
+//     await detectAbandonedJobs();
+
+//     const jobID = await runWorker();
+//     if (!jobID) return;
+
+//     const inputPath = await getInputPath(jobID);
+
+//     const exitCode = await runFFMPEG(inputPath, jobID);
+
+//     if (exitCode === 0) {
+//       await client.query(
+//         `UPDATE videos
+//          SET status = 'ready',
+//              hls_path = $2,
+//              claimed_at = NULL
+//          WHERE id = $1`,
+//         [jobID, `videos/hls/${jobID}`]
+//       );
+//       console.log("video marked READY");
+//     } else {
+//       const result = await client.query(
+//         `
+//     UPDATE videos
+//     SET
+//       retry_count = retry_count + 1,
+//       status = CASE
+//         WHEN retry_count + 1 >= 3 THEN 'failed'
+//         ELSE 'uploaded'
+//       END,
+//       claimed_at = NULL,
+//       last_error = $2
+//     WHERE id = $1
+//     RETURNING status, retry_count;
+//     `,
+//         [jobID, `ffmpeg exited with code ${exitCode}`]
+//       );
+
+//       console.log(
+//         `FFmpeg failed → status=${result.rows[0].status}, retries=${result.rows[0].retry_count}`
+//       );
+//     }
+//   } catch (err) {
+//     console.error("worker crashed", err);
+//   } finally {
+//     client.release();
+//     await pool.end();
+//   }
+// }
+
+async function finalizeJob(jobID, exitCode) {
   const client = await pool.connect();
-
   try {
-    await detectAbandonedJobs();
-
-    const jobID = await runWorker();
-    if (!jobID) return;
-
-    const inputPath = await getInputPath(jobID);
-
-    const exitCode = await runFFMPEG(inputPath, jobID);
-
-
     if (exitCode === 0) {
       await client.query(
         `UPDATE videos
@@ -178,10 +220,35 @@ async function main() {
       );
     }
   } catch (err) {
-    console.error("worker crashed", err);
+    console.log("Some error occoured", err);
   } finally {
     client.release();
-    await pool.end();
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function main() {
+  while (true) {
+    try {
+      await detectAbandonedJobs();
+      const jobID = await runWorker();
+
+      if (!jobID) {
+        await sleep(5000);
+        continue;
+      }
+
+      const inputPath = await getInputPath(jobID);
+      const exitCode = await runFFMPEG(inputPath, jobID);
+
+      await finalizeJob(jobID, exitCode);
+    } catch (err) {
+      console.error("worker crashed", err);
+      await sleep(5000);
+    }
   }
 }
 
