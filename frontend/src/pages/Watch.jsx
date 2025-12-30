@@ -1,36 +1,38 @@
 import VideoPlayer from "../components/VideoPlayer";
 import { useRef, useState, useEffect } from "react";
-
+import videojs from "video.js";
 
 function Watch() {
   const playerRef = useRef(null);
-  const videoId = "4cc6ecd3-24c4-412f-bdf8-76c7733692a6"; // Could be from URL params
+  const videoId = "1db3cf79-5cd2-42ef-870b-706b7c94b059";
   const videoLink = `http://localhost:5000/hls/${videoId}/master.m3u8`;
-  
+
+  function getAnonymousUserId() {
+    let id = localStorage.getItem("anon_user_id");
+    if (!id) {
+      id = crypto.randomUUID();
+      localStorage.setItem("anon_user_id", id);
+    }
+    return id;
+  }
+
   const [videoData, setVideoData] = useState({
     title: "Loading...",
     description: "Loading...",
   });
-  const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
   useEffect(() => {
     const fetchVideoData = async () => {
       try {
-        const response = await fetch(`http://localhost:5000/videos/${videoId}`);
-        if (!response.ok) {
-          throw new Error("Failed to fetch video data");
-        }
-        const data = await response.json();
+        const res = await fetch(`http://localhost:5000/videos/${videoId}`);
+        const data = await res.json();
         setVideoData({
           title: data.title,
           description: data.description || "No description available",
         });
-        setLoading(false);
       } catch (err) {
-        console.error("Error fetching video data:", err);
-        setError(err.message);
-        setLoading(false);
+        setError("Failed to load video metadata");
       }
     };
 
@@ -49,33 +51,65 @@ function Watch() {
     ],
   };
 
-  const handlePlayerReady = (player) => {
+  const handlePlayerReady = async (player) => {
     playerRef.current = player;
+    const userId = getAnonymousUserId();
 
-    // You can handle player events here, for example:
-    player.on("waiting", () => {
-      videojs.log("player is waiting");
+    // 🔑 Restore progress AFTER metadata loads
+    player.one("loadedmetadata", async () => {
+      const res = await fetch(
+        `http://localhost:5000/progress/${videoId}/${userId}`
+      );
+      const data = await res.json();
+
+      if (data.lastTime > 0) {
+        player.currentTime(data.lastTime);
+      }
     });
 
-    player.on("dispose", () => {
-      videojs.log("player will dispose");
+    // Save progress every 5s
+    const interval = setInterval(() => {
+      if (!player.paused()) {
+        fetch("http://localhost:5000/progress", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            userId,
+            videoId,
+            lastTime: player.currentTime(),
+          }),
+        });
+      }
+    }, 5000);
+
+    player.on("pause", () => {
+      fetch("http://localhost:5000/progress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          userId,
+          videoId,
+          lastTime: player.currentTime(),
+        }),
+      });
     });
+
+    player.on("dispose", () => clearInterval(interval));
   };
 
   return (
     <>
       <div style={{ padding: "20px" }}>
         {error ? (
-          <p style={{ color: "red" }}>Error: {error}</p>
+          <p style={{ color: "red" }}>{error}</p>
         ) : (
           <>
             <h1>{videoData.title}</h1>
-            <p style={{ color: "#666", marginTop: "10px" }}>
-              {videoData.description}
-            </p>
+            <p style={{ color: "#666" }}>{videoData.description}</p>
           </>
         )}
       </div>
+
       <VideoPlayer options={videoPlayerOptions} onReady={handlePlayerReady} />
     </>
   );
